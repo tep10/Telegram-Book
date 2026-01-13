@@ -24,7 +24,7 @@ from io import BytesIO
 import math
 
 # ========== CONFIGURATION ==========
-BOT_TOKEN = "8502848831:AAG184UsX7tirVtPSCsAcjzPBN8_t4PQ42E"  # Your bot token
+BOT_TOKEN = "8502848831:AAGiqv1OnYwo069PYwX7e_YpfTwxbpbD4ZM"  # Your bot token
 ADMIN_ID = 1273972944  # Your Telegram ID
 
 # Products with prices in USD
