@@ -1,40 +1,146 @@
-import logging
-import sqlite3
-import pandas as pd
-from datetime import datetime, timedelta
-from telegram import (
-    Update, 
-    InlineKeyboardButton, 
-    InlineKeyboardMarkup,
-    ReplyKeyboardMarkup
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    filters,
-    ContextTypes
-)
 import os
-from functools import wraps
-import requests
-from io import BytesIO
-import math
+import sqlite3
+import qrcode
+from flask import Flask
+from telegram import Update, InputFile
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ========== CONFIGURATION ==========
-BOT_TOKEN = "8502848831:AAGiqv1OnYwo069PYwX7e_YpfTwxbpbD4ZM"  # Your bot token
-ADMIN_ID = 1273972944  # Your Telegram ID
+# ================== CONFIG ==================
+BOT_TOKEN = os.getenv("8502848831:AAGiqv1OnYwo069PYwX7e_YpfTwxbpbD4ZM")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# Products with prices in USD
-PRODUCTS = {
-    "math_book": {"name": "Math Book", "price": 1.70, "emoji": "📐"},
-    "human_society": {"name": "Human & Society", "price": 1.99, "emoji": "👥"},
-    "business": {"name": "Principle of Business", "price": 1.99, "emoji": "💼"},
-    "computer": {"name": "Computer Book", "price": 2.50, "emoji": "💻"},
-}
+MERCHANT_NAME = "Pu-Tephh"
+MERCHANT_CITY = "Phnom Penh"
+BAKONG_ID = "sin_soktep@bkrt"   # CHANGE THIS
+DB_FILE = "orders.db"
 
+# ================== DATABASE ==================
+conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+c = conn.cursor()
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    product TEXT,
+    amount REAL,
+    status TEXT
+)
+""")
+conn.commit()
+
+def create_order(user_id, product, amount):
+    c.execute(
+        "INSERT INTO orders (user_id, product, amount, status) VALUES (?, ?, ?, ?)",
+        (user_id, product, amount, "PENDING"),
+    )
+    conn.commit()
+    return c.lastrowid
+
+def confirm_order(order_id):
+    c.execute("UPDATE orders SET status='PAID' WHERE id=?", (order_id,))
+    conn.commit()
+
+# ================== KHQR GENERATOR ==================
+def generate_khqr_payload(
+    merchant_name,
+    merchant_city,
+    bakong_id,
+    amount,
+    bill_number
+):
+    payload = (
+        "000201"
+        "010212"
+        "2937"
+        "0010A000000727"
+        "0113" + bakong_id +
+        "52040000"
+        "5303840"
+        f"54{len(str(amount)):02d}{amount}"
+        "5802KH"
+        f"59{len(merchant_name):02d}{merchant_name}"
+        f"60{len(merchant_city):02d}{merchant_city}"
+        f"62{len(bill_number)+4:02d}"
+        "0502" + bill_number
+        "6304"
+    )
+    return payload
+
+# ================== TELEGRAM BOT ==================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🛒 Welcome to KHQR Shop\n\n"
+        "/buy1 - Product 1 ($0.01)\n"
+        "/buy2 - Product 2 ($0.02)\n\n"
+        "Pay using Bakong / ABA / ACLEDA"
+    )
+
+async def buy1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await handle_buy(update, "Product 1", 0.01)
+
+async def buy2(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await handle_buy(update, "Product 2", 0.02)
+
+async def handle_buy(update, product, amount):
+    order_id = create_order(update.effective_user.id, product, amount)
+
+    payload = generate_khqr_payload(
+        MERCHANT_NAME,
+        MERCHANT_CITY,
+        BAKONG_ID,
+        amount,
+        str(order_id),
+    )
+
+    qr = qrcode.make(payload)
+    filename = f"khqr_{order_id}.png"
+    qr.save(filename)
+
+    await update.message.reply_photo(
+        photo=InputFile(filename),
+        caption=(
+            f"🧾 Order #{order_id}\n"
+            f"Product: {product}\n"
+            f"Amount: ${amount}\n\n"
+            "📲 Scan & pay with Bakong\n"
+            "⏳ Wait for admin confirmation"
+        ),
+    )
+
+async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /confirm ORDER_ID")
+        return
+
+    order_id = int(context.args[0])
+    confirm_order(order_id)
+
+    await update.message.reply_text(f"✅ Order #{order_id} confirmed")
+
+# ================== FLASK (Railway keeps service alive) ==================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "KHQR Telegram Bot Running"
+
+# ================== MAIN ==================
+def main():
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("buy1", buy1))
+    application.add_handler(CommandHandler("buy2", buy2))
+    application.add_handler(CommandHandler("confirm", confirm))
+
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()
 # Payment URLs
 KHQR_URL = "https://files.catbox.moe/0cofqs.jpg"
 ABA_PAY_URL = "https://pay.ababank.com/oRF8/7y7y1tha"
